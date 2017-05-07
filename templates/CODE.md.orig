@@ -1,0 +1,411 @@
+# Code Reading for Climate Control gem
+
+## Usage
+
+1. `require 'climate_control'`
+
+2. Call ClimateControl.modify, providing the block-specific environment
+   variables as keyword arguments and a block to execute.
+
+## cloc stats
+
+Language|files|blank|comment|code
+:-------|-------:|-------:|-------:|-------:
+Ruby|8|67|8|260
+Markdown|1|29|0|73
+YAML|1|0|0|11
+--------|--------|--------|--------|--------
+SUM:|10|96|8|344
+
+## climate_control.gemspec
+
+```ruby
+# -*- encoding: utf-8 -*-
+lib = File.expand_path("../lib", __FILE__)
+$LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
+require "climate_control/version"
+
+Gem::Specification.new do |gem|
+  gem.name          = "climate_control"
+  gem.version       = ClimateControl::VERSION
+  gem.authors       = ["Joshua Clayton"]
+  gem.email         = ["joshua.clayton@gmail.com"]
+  gem.description   = %q{Modify your ENV}
+  gem.summary       = %q{Modify your ENV easily with ClimateControl}
+  gem.homepage      = "https://github.com/thoughtbot/climate_control"
+  gem.license       = "MIT"
+
+  gem.files         = `git ls-files`.split($/)
+  gem.test_files    = gem.files.grep(%r{^(test|spec|features)/})
+  gem.require_paths = ["lib"]
+
+  gem.add_development_dependency "rspec", "~> 3.1.0"
+  gem.add_development_dependency "rake", "~> 10.3.2"
+  gem.add_development_dependency "simplecov", "~> 0.9.1"
+end
+```
+
+## Code
+
+### lib/climate_control.rb
+
+```ruby
+require "climate_control/environment"
+require "climate_control/errors"
+require "climate_control/modifier"
+require "climate_control/version"
+
+module ClimateControl
+  @@env = ClimateControl::Environment.new
+
+  def self.modify(environment_overrides, &block)
+    Modifier.new(env, environment_overrides, &block).process
+  end
+
+  def self.env
+    @@env
+  end
+end
+```
+
+### <a name="lib/climate_control/environment"></a>lib/climate_control/environment.rb
+
+```ruby
+require "thread" # https://ruby-doc.org/core-2.4.0/Thread.html
+require "forwardable"# https://ruby-doc.org/stdlib-2.4.0/libdoc/forwardable/rdoc/Forwardable.html
+
+module ClimateControl
+  class Environment
+    extend Forwardable
+
+    def initialize
+      @semaphore = Mutex.new
+      @owner = nil
+    end
+
+    def_delegators :env, :[]=, :to_hash, :[], :delete
+
+    def synchronize
+      if @owner == Thread.current
+        return yield if block_given?
+      end
+
+      @semaphore.synchronize do
+        begin
+          @owner = Thread.current
+          yield if block_given?
+        ensure
+          @owner = nil
+        end
+      end
+    end
+
+    private
+
+    def env
+      ENV
+    end
+  end
+end
+```
+
+### <a name="lib/climate_control/errors"></a>lib/climate_control/errors.rb
+
+```ruby
+module ClimateControl
+  class UnassignableValueError < ArgumentError; end
+end
+```
+
+### <a name="lib/climate_control/modifier"></a>lib/climate_control/modifier.rb
+
+```ruby
+module ClimateControl
+  class Modifier
+    def initialize(env, environment_overrides = {}, &block)
+      @environment_overrides = stringify_keys(environment_overrides)
+      @block = block
+      @env = env
+    end
+
+    def process
+      @env.synchronize do
+        begin
+          prepare_environment_for_block
+          run_block
+        ensure
+          cache_environment_after_block
+          delete_keys_that_do_not_belong
+          revert_changed_keys
+        end
+      end
+    end
+
+    private
+
+    def prepare_environment_for_block
+      @original_env = clone_environment
+      copy_overrides_to_environment
+      @env_with_overrides_before_block = clone_environment
+    end
+
+    def run_block
+      @block.call
+    end
+
+    def copy_overrides_to_environment
+      @environment_overrides.each do |key, value|
+        begin
+          @env[key] = value
+        rescue TypeError => e
+          raise UnassignableValueError,
+            "attempted to assign #{value} to #{key} but failed (#{e.message})"
+        end
+      end
+    end
+
+    def keys_to_remove
+      @environment_overrides.keys
+    end
+
+    def keys_changed_by_block
+      @keys_changed_by_block ||= OverlappingKeysWithChangedValues.new(@env_with_overrides_before_block, @env_after_block).keys
+    end
+
+    def cache_environment_after_block
+      @env_after_block = clone_environment
+    end
+
+    def delete_keys_that_do_not_belong
+      (keys_to_remove - keys_changed_by_block).each {|key| @env.delete(key) }
+    end
+
+    def revert_changed_keys
+      (@original_env.keys - keys_changed_by_block).each do |key|
+        @env[key] = @original_env[key]
+      end
+    end
+
+    def clone_environment
+      @env.to_hash
+    end
+
+    def stringify_keys(env)
+      env.each_with_object({}) do |(key, value), hash|
+        hash[key.to_s] = value
+      end
+    end
+
+    class OverlappingKeysWithChangedValues
+      def initialize(hash_1, hash_2)
+        @hash_1 = hash_1 || {}
+        @hash_2 = hash_2
+      end
+
+      def keys
+        overlapping_keys.select do |overlapping_key|
+          @hash_1[overlapping_key] != @hash_2[overlapping_key]
+        end
+      end
+
+      private
+
+      def overlapping_keys
+        @hash_2.keys & @hash_1.keys
+      end
+    end
+  end
+end
+```
+
+### <a name="lib/climate_control/version"></a>lib/climate_control/version.rb
+
+```ruby
+module ClimateControl
+  VERSION = "0.1.0"
+end
+```
+
+## Specs
+
+### allows modification of the environment
+
+```ruby
+block_run = false
+ClimateControl.modify FOO: "bar" do
+  expect(ENV["FOO"]).to eq "bar"
+  block_run = true
+end
+
+expect(ENV["FOO"]).to be_nil
+expect(block_run).to be true
+```
+
+### modifies the environment
+
+```ruby
+with_modified_env VARIABLE_1: "bar", VARIABLE_2: "qux" do
+  expect(ENV["VARIABLE_1"]).to eq "bar"
+  expect(ENV["VARIABLE_2"]).to eq "qux"
+end
+
+expect(ENV["VARIABLE_1"]).to be_nil
+expect(ENV["VARIABLE_2"]).to be_nil
+```
+
+### allows for environment variables to be assigned within the block
+
+```ruby
+with_modified_env VARIABLE_1: "modified" do
+  ENV["ASSIGNED_IN_BLOCK"] = "assigned"
+end
+
+expect(ENV["ASSIGNED_IN_BLOCK"]).to eq "assigned"
+```
+
+### reassigns previously set environment variables
+
+```ruby
+ENV["VARIABLE_ASSIGNED_BEFORE_MODIFYING_ENV"] = "original"
+expect(ENV["VARIABLE_ASSIGNED_BEFORE_MODIFYING_ENV"]).to eq "original"
+
+with_modified_env VARIABLE_ASSIGNED_BEFORE_MODIFYING_ENV: "overridden" do
+  expect(ENV["VARIABLE_ASSIGNED_BEFORE_MODIFYING_ENV"]).to eq "overridden"
+end
+
+expect(ENV["VARIABLE_ASSIGNED_BEFORE_MODIFYING_ENV"]).to eq "original"
+```
+
+### persists the change when overriding the variable in the block
+
+```ruby
+with_modified_env VARIABLE_MODIFIED_AND_THEN_ASSIGNED: "modified" do
+  ENV["VARIABLE_MODIFIED_AND_THEN_ASSIGNED"] = "assigned value"
+end
+
+expect(ENV["VARIABLE_MODIFIED_AND_THEN_ASSIGNED"]).to eq "assigned value"
+```
+
+### resets environment variables even if the block raises
+
+```ruby
+expect {
+  with_modified_env FOO: "bar" do
+    raise "broken"
+  end
+}.to raise_error("broken")
+
+expect(ENV["FOO"]).to be_nil
+```
+
+### preserves environment variables set within the block
+
+```ruby
+ENV["CHANGED"] = "old value"
+
+with_modified_env IRRELEVANT: "ignored value" do
+  ENV["CHANGED"] = "new value"
+end
+
+expect(ENV["CHANGED"]).to eq "new value"
+```
+
+### returns the value of the block
+
+```ruby
+value = with_modified_env VARIABLE_1: "bar" do
+  "value inside block"
+end
+
+expect(value).to eq "value inside block"
+```
+
+### handles threads correctly
+```ruby
+# failure path without mutex
+# [thread_removing_env] BAZ is assigned
+# 0.25s passes
+# [other_thread] FOO is assigned and ENV is copied (which includes BAZ)
+# 0.25s passes
+# [thread_removing_env] thread resolves and BAZ is removed from env; other_thread still retains knowledge of BAZ
+# 0.25s passes
+# [other_thread] thread resolves, FOO is removed, BAZ is copied back to ENV
+
+thread_removing_env = Thread.new do
+  with_modified_env BAZ: "buzz" do
+    sleep 0.5
+  end
+
+  expect(ENV["BAZ"]).to be_nil
+end
+
+other_thread = Thread.new do
+  sleep 0.25
+  with_modified_env FOO: "bar" do
+    sleep 0.5
+  end
+
+  expect(ENV["FOO"]).to be_nil
+end
+
+thread_removing_env.join
+other_thread.join
+
+expect(ENV["FOO"]).to be_nil
+expect(ENV["BAZ"]).to be_nil
+```
+
+### is re-entrant
+```ruby
+ret = with_modified_env(FOO: "foo") do
+  with_modified_env(BAR: "bar") do
+    "bar"
+  end
+end
+
+expect(ret).to eq("bar")
+
+expect(ENV["FOO"]).to be_nil
+expect(ENV["BAR"]).to be_nil
+```
+
+### raises when the value cannot be assigned properly
+```ruby
+Thing = Class.new
+message = generate_type_error_for_object(Thing.new)
+
+expect do
+  with_modified_env(FOO: Thing.new)
+end.to raise_error ClimateControl::UnassignableValueError, /attempted to assign .*Thing.* to FOO but failed \(#{message}\)$/
+```
+
+### Helpers used by specs:
+
+```ruby
+def with_modified_env(options, &block)
+  ClimateControl.modify(options, &block)
+end
+
+def generate_type_error_for_object(object)
+  message = nil
+
+  begin
+    "1" + object
+  rescue TypeError => e
+    message = e.message
+  end
+
+  message
+end
+
+around do |example|
+  old_env = ENV.to_hash
+
+  example.run
+
+  ENV.clear
+  old_env.each do |key, value|
+    ENV[key] = value
+  end
+end
+```
