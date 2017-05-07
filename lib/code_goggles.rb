@@ -1,5 +1,7 @@
-require "code_goggles/version"
+require 'code_goggles/version'
 
 module CodeGoggles
-  # Your code goes here...
+  def generate
+    puts 'Generate a CODE.md for given gem'
+  end
 end
