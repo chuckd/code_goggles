@@ -2,20 +2,16 @@
 
 ## Code Stats
 
-cloc|github.com/AlDanial/cloc v 1.72  T=0.19 s (82.9 files/s, 22779.1 lines/s)
+cloc|github.com/AlDanial/cloc v 1.72  T=0.07 s (151.5 files/s, 6364.9 lines/s)
 --- | ---
 
 Language|files|blank|comment|code
 :-------|-------:|-------:|-------:|-------:
-JavaScript|1|260|184|1263
-HTML|2|404|0|909
-CSS|1|80|70|649
 Ruby|8|62|8|237
-JSON|2|0|0|156
 Markdown|1|29|0|73
 YAML|1|0|0|11
 --------|--------|--------|--------|--------
-SUM:|16|835|262|3298
+SUM:|10|91|8|321
 
 ## Gemspec
 
