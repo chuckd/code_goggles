@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
 
 require 'code_goggles'
-puts CodeGoggles.generate
+
+puts CodeGoggles.generate(ARGV[0])
